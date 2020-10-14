@@ -1,1 +1,1 @@
-# wifi-csi-activity-recognition-with-deep-learning
+# wifi csi activity recognition with deep learning
