@@ -3,52 +3,28 @@ import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import classification_report,confusion_matrix
 import tensorflow as tf
+from collections import Counter
 
-def major_vote(ls,impurity=0.01):
-    counter = []
-    for category in set(ls):
-        c = 0
-        for item in ls:
-            if item == category:
-                c += 1
-                continue
-        counter.append(c)
-    if float(min(counter)) > impurity*sum(counter):
-        idx = min(counter)
+def major_vote(arr, impurity_threshold=0.01):
+    counter = Counter(list(arr.reshape(-1)))
+    lowest_impurity = float(counter.most_common()[-1][-1]/arr.shape[0])
+    if lowest_impurity > impurity_threshold:
+        result = counter.most_common()[-1][0]
     else:
-        idx = max(counter)
-    result = list(set(ls))[counter.index(idx)]
+        result = counter.most_common()[0][0]
     return result
 
-
-def data_transform(df,window_size,slide_size,impurity=0.001,skp=False,flatten=False,reshape=False):
+def slide_augmentation(features,labels,window_size,slide_size,skip_labels=None):
+    assert features.shape[0] == labels.shape[0]
     X,y,z = [],[],[]
-    for u in df['user'].unique():
-        df_ = df[df['user'] == u].reset_index(drop=True)
-        for i in range(0,len(df_)-window_size+1,slide_size):
-            lb = major_vote(df_.iloc[i:i+window_size,-1],impurity)          
-            if (skp == True) & (lb == 'noactivity'):
-                continue
-            else:
-                X.append(df_.iloc[i:i+window_size,:-2].to_numpy())
-                z.append(major_vote(df_.iloc[i:i+window_size,-2]))
-                y.append(lb)
-        del df_
-        print(f'{u} done')
-
-    X = np.array(X)
-    y = np.array(y)
-    z = np.array(z)
-    print('done')
-    
-    if flatten == True:
-        X = X.reshape(len(X),-1) 
-
-    if reshape == True:
-        y = y.reshape(-1,1)
-        z = z.reshape(-1,1)
-    
-    return X,y,z
+    for i in range(0,len(features)-window_size+1,slide_size):
+        label = major_vote(labels[i:i+window_size],impurity_threshold=0.01)        
+        if (skip_labels != None) and (label in skip_labels):   
+            continue
+        else:
+            X.append(features[i:i+window_size])
+            y.append(label)
+    return np.array(X),np.array(y)
 
 def stacking(data,scale=255):
     if scale != False:
@@ -66,41 +42,39 @@ def breakpoints(ls):
             points.append(i)
     return points
 
-def resampling(X,y,oversampling=False,return_idx=False):
-    assert len(X) == len(y)
-    df = pd.DataFrame(y,columns=['label'])
+from sklearn.utils import shuffle
+
+def index_resampling(arr,oversampling=True):
+    series = pd.Series(arr.reshape(-1))
+    value_counts = series.value_counts()
     if oversampling == True:
-        num = max(df['label'].value_counts())
+        number_of_sample = value_counts.max()
         replace = True
-    else: 
-        num = min(df['label'].value_counts())
+    else:
+        number_of_sample = value_counts.min()
         replace = False
     idx_ls = []
-    for c in df['label'].unique():
-        idx_c = df[df['label'] == c].sample(num,replace=replace,random_state=0).index
-        idx_ls.append(idx_c)
+    for item in value_counts.index:
+        idx_ls.append([*series[series==item].sample(n=number_of_sample,replace=replace).index])
     idx_ls = np.array(idx_ls).reshape(-1,)
-    if return_idx == True:
-        return idx_ls
-    return X[idx_ls],y[idx_ls]
+    return idx_ls
 
-def apply_sampling(item_ls,idx_ls):
-    new = []
-    for item in item_ls:
-        new.append(item[idx_ls])
-    return new
+def resampling(X,y,z,oversampling=True):
+    idx_ls = index_resampling(y,oversampling)
+    X,y,z = shuffle(X[idx_ls],y[idx_ls],z[idx_ls])
+    return X,y,z
 
-def scale_dataframe(df,scaler,fit=False):
-    cols = df.columns[:-2]
-    data = df.iloc[:,:-2].to_numpy()
-    if fit == True:
-        print("fit_dataframe")
-        data = scaler.fit_transform(data)
-    else:
-        print("transform_dataframe")
-        data = scaler.transform(data)
-    return pd.concat([pd.DataFrame(data,columns=cols).reset_index(drop=True),
-                      df.iloc[:,-2:].reset_index(drop=True)],axis=1),scaler
+# def scale_dataframe(df,scaler,fit=False):
+#     cols = df.columns[:-2]
+#     data = df.iloc[:,:-2].to_numpy()
+#     if fit == True:
+#         print("fit_dataframe")
+#         data = scaler.fit_transform(data)
+#     else:
+#         print("transform_dataframe")
+#         data = scaler.transform(data)
+#     return pd.concat([pd.DataFrame(data,columns=cols).reset_index(drop=True),
+#                       df.iloc[:,-2:].reset_index(drop=True)],axis=1),scaler
 
 def evaluation(model,X_test,y_test,ohe,return_all_record=False):
     """
@@ -130,27 +104,6 @@ def evaluation(model,X_test,y_test,ohe,return_all_record=False):
         return pred_c, actual_c, report, cmtx
     return cmtx
 
-
-
-def define_graph(layers,input_shape):
-    """
-    Define the graph that connect the layers, in sequential order
-    
-    Input
-        layers (list<tensorflow.keras.layer>): keras layers, length of list must be larger than 2, immutable 
-        input_shape (tuple): input shape
-        
-    Return
-        graph (tensorflow.python.keras.engine.training.Model): the model, immutable 
-    
-    """
-    inputs = tf.keras.Input(shape=input_shape)
-    x = layers[0](inputs,training=True)
-    for layer in layers[1:-1]:
-        x = layer(x,training=True)
-    outputs = layers[-1](x,training=True)
-    graph = tf.keras.Model(inputs=inputs, outputs=outputs)
-    return graph
 
 def cross_validation(model,dataset,batch_size=64,epochs=200):
     """
